@@ -244,12 +244,23 @@ if ($nodeOk) {
         $NpmLog = Join-Path $LogDir "npm-install.log"
         Push-Location $RemotionDir
         try {
-            # npm cache をクリーンしてから install
+            # package-lock.json と node_modules を削除（EBADPLATFORM対策）
+            # GitHubから取得したzipには配布元OS（Linux）の lockfile が含まれることがあり、
+            # Windowsで `npm install` するとネイティブバイナリ参照が衝突して失敗する
+            $lockFile = Join-Path $RemotionDir "package-lock.json"
+            if (Test-Path $lockFile) {
+                Write-Host "  既存の package-lock.json を削除（クロスプラットフォーム対応）..." -ForegroundColor Gray
+                Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+            }
+            $nmDir = Join-Path $RemotionDir "node_modules"
+            if (Test-Path $nmDir) {
+                Remove-Item $nmDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+
             Write-Host "  npm キャッシュをクリーン..." -ForegroundColor Gray
             npm cache verify 2>&1 | Out-File -Append -Encoding utf8 $NpmLog
 
             Write-Host "  npm install 実行中..." -ForegroundColor Gray
-            # --no-audit --no-fund で出力を減らし高速化
             npm install --no-audit --no-fund 2>&1 | Out-File -Append -Encoding utf8 $NpmLog
 
             if (Test-Path (Join-Path $RemotionDir "node_modules\remotion")) {

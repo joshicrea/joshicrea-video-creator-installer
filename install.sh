@@ -216,6 +216,14 @@ if $NODE_OK; then
     else
         NPM_LOG="$LOG_DIR/npm-install.log"
         cd "$REMOTION_DIR"
+        # package-lock.json と node_modules を削除（EBADPLATFORM対策）
+        # GitHubから取得したzipには配布元OS（Linux）の lockfile が含まれることがあり、
+        # 別OSで `npm install` するとネイティブバイナリ参照が衝突して失敗する
+        if [ -f package-lock.json ]; then
+            echo "  既存の package-lock.json を削除（クロスプラットフォーム対応）..."
+            rm -f package-lock.json
+        fi
+        rm -rf node_modules
         echo "  npm キャッシュをクリーン..."
         npm cache verify >> "$NPM_LOG" 2>&1
         echo "  npm install 実行中..."
