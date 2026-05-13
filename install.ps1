@@ -9,26 +9,34 @@
 # やること:
 #   1. GitHub Personal Access Token (PAT) を環境変数から取得
 #   2. PRIVATE リポジトリから最新コミットを取得
-#   3. ZIPをダウンロードして展開
-#   4. プラグインキャッシュにコピー
-#   5. installed_plugins.json / settings.json を更新
-#   6. 依存関係をチェック
+#   3. ZIPをダウンロードして展開・プラグインキャッシュにコピー
+#   4. installed_plugins.json / settings.json を更新
+#   5. 全依存関係を自動インストール（winget + pip + npm）
+#      - ffmpeg / Node.js LTS / Python（無ければ winget で）
+#      - fish-audio-sdk / openai-whisper / google-api-python-client（pip）
+#      - Remotion + 関連パッケージ（npm install）
+#   6. インストール失敗時は詳細ログを出力
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"  # 一部失敗してもインストールを続行
 $ProgressPreference = "SilentlyContinue"
 
 Write-Host ""
 Write-Host "AI動画クリエイター プラグインをインストールしています..." -ForegroundColor Cyan
 Write-Host ""
 
-# UTF-8 BOMなしファイル書き込み
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Content)
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
-# --- PAT を取得 ---
+# 環境変数 PATH を再読み込み（winget でインストール直後に新コマンドを認識させる）
+function Update-EnvPath {
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("Path", "User")
+}
+
+# --- PAT 取得 ---
 $Pat = $env:GITHUB_PAT
 if (-not $Pat) {
     Write-Host "エラー: GitHub Personal Access Token が設定されていません。" -ForegroundColor Red
@@ -53,10 +61,15 @@ $TempDir    = [IO.Path]::GetTempPath()
 $ClaudeDir  = [IO.Path]::Combine($HomeDir, ".claude")
 $PluginsDir = [IO.Path]::Combine($ClaudeDir, "plugins")
 $CacheDir   = [IO.Path]::Combine($PluginsDir, "cache", "joshicrea", "joshicrea-video-creator")
-
+$LogDir     = [IO.Path]::Combine($ClaudeDir, "logs")
 New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-# --- GitHubから最新コミット情報を取得（認証ヘッダ付き）---
+# ============================================================
+# Section 1: 本体プラグインをダウンロード・展開
+# ============================================================
+Write-Host "[1/5] プラグイン本体をダウンロード..." -ForegroundColor Cyan
+
 $Headers = @{
     "Authorization" = "token $Pat"
     "User-Agent"    = "joshicrea-video-creator-installer"
@@ -75,11 +88,9 @@ try {
 
 $InstallPath = [IO.Path]::Combine($CacheDir, $ShortSha)
 
-# すでにインストール済みかチェック
 if (Test-Path $InstallPath) {
-    Write-Host "すでに最新版がインストールされています ($ShortSha)" -ForegroundColor Green
+    Write-Host "  すでに最新版がダウンロード済み ($ShortSha)" -ForegroundColor Green
 } else {
-    # --- ZIPをダウンロード（認証ヘッダ付き）---
     $ZipUrl  = "https://api.github.com/repos/joshicrea/joshicrea-video-creator/zipball/master"
     $ZipPath = [IO.Path]::Combine($TempDir, "joshicrea-video-creator.zip")
     $ExtTemp = [IO.Path]::Combine($TempDir, "joshicrea-vc-extract-$ShortSha")
@@ -93,27 +104,25 @@ if (Test-Path $InstallPath) {
 
     if (Test-Path $ExtTemp) { Remove-Item $ExtTemp -Recurse -Force }
     Expand-Archive -Path $ZipPath -DestinationPath $ExtTemp -Force
-
-    # GitHub API のzipballは "joshicrea-joshicrea-video-creator-{sha7}/" フォルダに展開される
     $ExtractedFolder = Get-ChildItem $ExtTemp -Directory | Select-Object -First 1
     Move-Item $ExtractedFolder.FullName $InstallPath -Force
     Remove-Item $ExtTemp -Force -ErrorAction SilentlyContinue
     Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
-
-    Write-Host "[OK] ダウンロード完了 ($ShortSha)" -ForegroundColor Green
+    Write-Host "  ダウンロード完了 ($ShortSha)" -ForegroundColor Green
 }
 
-# --- installed_plugins.json を更新 ---
-$InstalledPath = [IO.Path]::Combine($PluginsDir, "installed_plugins.json")
+# ============================================================
+# Section 2: Claude Code にプラグイン登録
+# ============================================================
+Write-Host ""
+Write-Host "[2/5] Claude Code にプラグイン登録..." -ForegroundColor Cyan
 
+$InstalledPath = [IO.Path]::Combine($PluginsDir, "installed_plugins.json")
 if (Test-Path $InstalledPath) {
     $Installed = [System.IO.File]::ReadAllText($InstalledPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 } else {
     New-Item -ItemType Directory -Force -Path $PluginsDir | Out-Null
-    $Installed = [PSCustomObject]@{
-        version = 2
-        plugins = [PSCustomObject]@{}
-    }
+    $Installed = [PSCustomObject]@{ version = 2; plugins = [PSCustomObject]@{} }
 }
 
 $PluginEntry = [PSCustomObject]@{
@@ -124,110 +133,163 @@ $PluginEntry = [PSCustomObject]@{
     lastUpdated  = (Get-Date -Format "o")
     gitCommitSha = $FullSha
 }
-
 $Key = "joshicrea-video-creator@joshicrea"
 if ($Installed.plugins.PSObject.Properties[$Key]) {
     $Installed.plugins.PSObject.Properties[$Key].Value = @($PluginEntry)
 } else {
     $Installed.plugins | Add-Member -Name $Key -Value @($PluginEntry) -MemberType NoteProperty
 }
-
 Write-Utf8NoBom -Path $InstalledPath -Content ($Installed | ConvertTo-Json -Depth 10)
 
-# --- settings.json に enabledPlugins を追加 ---
 $SettingsPath = [IO.Path]::Combine($ClaudeDir, "settings.json")
-
 if (Test-Path $SettingsPath) {
     $Settings = [System.IO.File]::ReadAllText($SettingsPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 } else {
     $Settings = [PSCustomObject]@{}
 }
-
 if (-not ($Settings.PSObject.Properties["enabledPlugins"])) {
     $Settings | Add-Member -Name "enabledPlugins" -Value ([PSCustomObject]@{}) -MemberType NoteProperty
 }
-
 if ($Settings.enabledPlugins.PSObject.Properties[$Key]) {
     $Settings.enabledPlugins.PSObject.Properties[$Key].Value = $true
 } else {
     $Settings.enabledPlugins | Add-Member -Name $Key -Value $true -MemberType NoteProperty
 }
-
 Write-Utf8NoBom -Path $SettingsPath -Content ($Settings | ConvertTo-Json -Depth 10)
+Write-Host "  プラグイン登録完了" -ForegroundColor Green
 
-Write-Host "[OK] Claude Code にプラグインを登録" -ForegroundColor Green
+# ============================================================
+# Section 3: システム依存（winget で自動インストール）
+# ============================================================
 Write-Host ""
+Write-Host "[3/5] システム依存関係を自動インストール..." -ForegroundColor Cyan
 
-# --- 依存関係チェック ---
-Write-Host "依存関係をチェックしています..." -ForegroundColor Cyan
+$HasWinget = Get-Command winget -ErrorAction SilentlyContinue
+if (-not $HasWinget) {
+    Write-Host "  警告: winget が見つかりません。Windows 11 標準ですが、Windows 10 ではMicrosoft Storeから「アプリ インストーラー」を入れてください。" -ForegroundColor Yellow
+    Write-Host "  https://www.microsoft.com/p/app-installer/9nblggh4nns1"
+}
 
-$Missing = @()
-function Check-Tool($name, $cmd, $hint) {
-    Write-Host -NoNewline "[$name] "
-    try {
-        Invoke-Expression $cmd 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "OK" -ForegroundColor Green
-            return $true
+function Install-WithWinget($name, $id) {
+    if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
+        if ($HasWinget) {
+            Write-Host "  $name をインストール中... (winget id: $id)" -ForegroundColor Gray
+            winget install -e --id $id --accept-source-agreements --accept-package-agreements --silent 2>&1 | Out-Null
+            Update-EnvPath
+            if (Get-Command $name -ErrorAction SilentlyContinue) {
+                Write-Host "  [OK] $name インストール完了" -ForegroundColor Green
+                return $true
+            } else {
+                Write-Host "  [WARN] $name のインストールに失敗しました。手動で入れてください。" -ForegroundColor Yellow
+                return $false
+            }
+        } else {
+            Write-Host "  [SKIP] winget無しのため $name は手動インストールが必要です。" -ForegroundColor Yellow
+            return $false
         }
-    } catch {}
-    Write-Host "未インストール" -ForegroundColor Yellow
-    Write-Host "  → $hint" -ForegroundColor Gray
-    return $false
+    } else {
+        Write-Host "  [OK] $name はインストール済み" -ForegroundColor Green
+        return $true
+    }
 }
 
-if (-not (Check-Tool "Python 3.10+" "python --version" "https://www.python.org/downloads/")) { $Missing += "Python" }
-if (-not (Check-Tool "ffmpeg" "ffmpeg -version" "winget install ffmpeg")) { $Missing += "ffmpeg" }
-if (-not (Check-Tool "Node.js 18+" "node --version" "https://nodejs.org/")) { $Missing += "Node.js" }
+$pyOk   = Install-WithWinget "python"  "Python.Python.3.12"
+$null   = Install-WithWinget "ffmpeg"  "Gyan.FFmpeg"
+$nodeOk = Install-WithWinget "node"    "OpenJS.NodeJS.LTS"
 
+# ============================================================
+# Section 4: Pythonパッケージ
+# ============================================================
 Write-Host ""
-Write-Host "Pythonパッケージ:" -ForegroundColor Cyan
-Write-Host -NoNewline "[fish-audio-sdk] "
-if (pip show fish-audio-sdk 2>$null) {
-    Write-Host "OK" -ForegroundColor Green
+Write-Host "[4/5] Pythonパッケージをインストール..." -ForegroundColor Cyan
+
+if ($pyOk) {
+    $PipLog = Join-Path $LogDir "pip-install.log"
+    Write-Host "  pip 更新中..." -ForegroundColor Gray
+    python -m pip install --upgrade pip 2>&1 | Out-File -Append -Encoding utf8 $PipLog
+
+    $pyPackages = @(
+        "fish-audio-sdk",
+        "openai-whisper",
+        "google-api-python-client",
+        "google-auth-oauthlib",
+        "pyyaml",
+        "requests"
+    )
+    foreach ($pkg in $pyPackages) {
+        Write-Host "  $pkg をインストール中..." -ForegroundColor Gray
+        python -m pip install --upgrade $pkg 2>&1 | Out-File -Append -Encoding utf8 $PipLog
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [OK] $pkg" -ForegroundColor Green
+        } else {
+            Write-Host "  [WARN] $pkg のインストールに失敗。ログ: $PipLog" -ForegroundColor Yellow
+        }
+    }
 } else {
-    Write-Host "未インストール" -ForegroundColor Yellow
-    Write-Host "  → pip install fish-audio-sdk" -ForegroundColor Gray
-    $Missing += "fish-audio-sdk"
+    Write-Host "  [SKIP] Python未インストールのためPythonパッケージはスキップ" -ForegroundColor Yellow
 }
 
-Write-Host -NoNewline "[google-api-python-client] "
-if (pip show google-api-python-client 2>$null) {
-    Write-Host "OK" -ForegroundColor Green
-} else {
-    Write-Host "未インストール" -ForegroundColor Yellow
-    Write-Host "  → pip install google-api-python-client google-auth-oauthlib pyyaml requests" -ForegroundColor Gray
-    $Missing += "google-api-python-client"
-}
-
+# ============================================================
+# Section 5: Remotion (npm install)
+# ============================================================
 Write-Host ""
-Write-Host "Remotion (Node.js):" -ForegroundColor Cyan
-$RemotionDir = Join-Path $InstallPath "scripts\remotion-project"
-if (Test-Path (Join-Path $RemotionDir "node_modules\remotion")) {
-    Write-Host "[remotion] OK" -ForegroundColor Green
+Write-Host "[5/5] Remotion（テロップ焼き込みエンジン）をインストール..." -ForegroundColor Cyan
+Write-Host "  ※ 5〜15分かかる場合があります。途中で止めずにお待ちください。" -ForegroundColor Gray
+
+if ($nodeOk) {
+    $RemotionDir = Join-Path $InstallPath "scripts\remotion-project"
+    if (-not (Test-Path $RemotionDir)) {
+        Write-Host "  [WARN] remotion-project ディレクトリが見つかりません: $RemotionDir" -ForegroundColor Yellow
+    } else {
+        $NpmLog = Join-Path $LogDir "npm-install.log"
+        Push-Location $RemotionDir
+        try {
+            # npm cache をクリーンしてから install
+            Write-Host "  npm キャッシュをクリーン..." -ForegroundColor Gray
+            npm cache verify 2>&1 | Out-File -Append -Encoding utf8 $NpmLog
+
+            Write-Host "  npm install 実行中..." -ForegroundColor Gray
+            # --no-audit --no-fund で出力を減らし高速化
+            npm install --no-audit --no-fund 2>&1 | Out-File -Append -Encoding utf8 $NpmLog
+
+            if (Test-Path (Join-Path $RemotionDir "node_modules\remotion")) {
+                Write-Host "  [OK] Remotion インストール完了" -ForegroundColor Green
+            } else {
+                Write-Host "  [WARN] Remotion のインストールに失敗しました。" -ForegroundColor Yellow
+                Write-Host "  詳細ログ: $NpmLog" -ForegroundColor Yellow
+                Write-Host ""
+                Write-Host "  対処方法:" -ForegroundColor Yellow
+                Write-Host "    1. PowerShell を管理者として開いて、もう一度ワンライナーを実行" -ForegroundColor Gray
+                Write-Host "    2. それでも失敗するなら、以下のフォルダで手動実行:" -ForegroundColor Gray
+                Write-Host "       cd `"$RemotionDir`"" -ForegroundColor Gray
+                Write-Host "       npm install" -ForegroundColor Gray
+                Write-Host "    3. ログ ($NpmLog) を林にお送りください" -ForegroundColor Gray
+            }
+        } finally {
+            Pop-Location
+        }
+    }
 } else {
-    Write-Host "[remotion] 未インストール" -ForegroundColor Yellow
-    Write-Host "  → cd `"$RemotionDir`" ; npm install" -ForegroundColor Gray
-    $Missing += "remotion"
+    Write-Host "  [SKIP] Node.js未インストールのためRemotionはスキップ" -ForegroundColor Yellow
 }
 
+# ============================================================
+# 完了
+# ============================================================
 Write-Host ""
 Write-Host "=========================================="
-if ($Missing.Count -eq 0) {
-    Write-Host "インストール完了！" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "次の手順:"
-    Write-Host "  1. Claude Code を完全に閉じる"
-    Write-Host "  2. Claude Code を再度開く"
-    Write-Host "  3. チャットに「こんにちは」と送るとセットアップが始まります"
-} else {
-    Write-Host "プラグインの登録は完了しました。" -ForegroundColor Green
-    Write-Host "次の依存関係が未インストールです:" -ForegroundColor Yellow
-    Write-Host "  $($Missing -join ', ')"
-    Write-Host ""
-    Write-Host "上記の手順でインストールしてから Claude Code を再起動してください。"
-}
+Write-Host "インストール完了！" -ForegroundColor Green
 Write-Host ""
+Write-Host "次の手順:"
+Write-Host "  1. Claude Code を完全に閉じる"
+Write-Host "  2. Claude Code を再度開く"
+Write-Host "  3. チャットに「こんにちは」と送るとセットアップが始まります"
+Write-Host ""
+if (-not $ffmpegOk -or -not $nodeOk -or -not $pyOk) {
+    Write-Host "一部の依存関係が自動インストールできませんでした。" -ForegroundColor Yellow
+    Write-Host "Claude Code 起動後に「依存関係を確認して」と話しかけると、不足分の対処を案内します。" -ForegroundColor Yellow
+    Write-Host ""
+}
 
-# 念のためPATを環境変数から消去（セキュリティ）
+# PATを環境変数から消去
 $env:GITHUB_PAT = $null
