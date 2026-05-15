@@ -15,8 +15,13 @@
 #      - Remotion and related packages via npm install
 #   6. On install failure write detailed log
 
-$ErrorActionPreference = "Continue"  # 一部失敗してもインストールを続行
+$ErrorActionPreference = "Continue"  # keep going even if some steps fail
 $ProgressPreference = "SilentlyContinue"
+
+# TLS 1.2 enforcement for old Windows 10 / PS 5.1 default SSL issues
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
 
 Write-Host ""
 Write-Host "AI動画クリエイター プラグインをインストールしています..." -ForegroundColor Cyan
@@ -109,6 +114,15 @@ if (Test-Path $InstallPath) {
     Write-Host "  ダウンロード完了 ($ShortSha)" -ForegroundColor Green
 }
 
+# Cleanup old versions, keep only the 2 most recent
+$existingVersions = Get-ChildItem $CacheDir -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+if ($existingVersions.Count -gt 2) {
+    foreach ($oldVer in $existingVersions | Select-Object -Skip 2) {
+        Write-Host "  古いバージョンを削除: $($oldVer.Name)" -ForegroundColor Gray
+        Remove-Item $oldVer.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # ============================================================
 # Section 2: Claude Code にプラグイン登録
 # ============================================================
@@ -155,6 +169,14 @@ if ($Settings.enabledPlugins.PSObject.Properties[$Key]) {
 }
 Write-Utf8NoBom -Path $SettingsPath -Content ($Settings | ConvertTo-Json -Depth 10)
 Write-Host "  プラグイン登録完了" -ForegroundColor Green
+
+# scripts/config.yaml を初期生成（template から）
+$cfgTemplate = Join-Path $InstallPath "scripts\config.yaml.template"
+$cfgTarget = Join-Path $InstallPath "scripts\config.yaml"
+if ((Test-Path $cfgTemplate) -and -not (Test-Path $cfgTarget)) {
+    Copy-Item $cfgTemplate $cfgTarget -Force
+    Write-Host "  [OK] scripts/config.yaml を template から生成" -ForegroundColor Green
+}
 
 # ============================================================
 # Section 3: システム依存（winget で自動インストール）
@@ -261,8 +283,16 @@ if ($nodeOk) {
 
             Write-Host "  npm install 実行中..." -ForegroundColor Gray
             npm install --no-audit --no-fund 2>&1 | Out-File -Append -Encoding utf8 $NpmLog
+            $npmExit = $LASTEXITCODE
 
-            if (Test-Path (Join-Path $RemotionDir "node_modules\remotion")) {
+            # 成功判定: exit code 0 かつ remotion ディレクトリ存在 かつ ログに npm ERR が含まれない
+            $remotionDirExists = Test-Path (Join-Path $RemotionDir "node_modules\remotion")
+            $hasNpmErrors = $false
+            if (Test-Path $NpmLog) {
+                $logContent = Get-Content $NpmLog -Raw -ErrorAction SilentlyContinue
+                if ($logContent -match "npm (ERR!|error)") { $hasNpmErrors = $true }
+            }
+            if ($npmExit -eq 0 -and $remotionDirExists -and -not $hasNpmErrors) {
                 Write-Host "  [OK] Remotion インストール完了" -ForegroundColor Green
             } else {
                 Write-Host "  [WARN] Remotion のインストールに失敗しました。" -ForegroundColor Yellow
