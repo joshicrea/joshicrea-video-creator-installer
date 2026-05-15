@@ -1,21 +1,19 @@
-# AI動画クリエイター ワンライナーインストーラー (Windows)
+# AI Video Creator installer for Windows
 #
-# 使い方（購入者がClaude Codeチャットに貼り付け）:
-#
-#   以下のURLからAI動画クリエイターのインストーラーを取得して実行してください。
-#   実行前に環境変数 GITHUB_PAT に以下のトークンを設定してください: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Usage: paste this into Claude Code or PowerShell.
+# Set environment variable GITHUB_PAT before running.
 #   https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.ps1
 #
-# やること:
-#   1. GitHub Personal Access Token (PAT) を環境変数から取得
-#   2. PRIVATE リポジトリから最新コミットを取得
-#   3. ZIPをダウンロードして展開・プラグインキャッシュにコピー
-#   4. installed_plugins.json / settings.json を更新
-#   5. 全依存関係を自動インストール（winget + pip + npm）
-#      - ffmpeg / Node.js LTS / Python（無ければ winget で）
-#      - fish-audio-sdk / openai-whisper / google-api-python-client（pip）
-#      - Remotion + 関連パッケージ（npm install）
-#   6. インストール失敗時は詳細ログを出力
+# What it does:
+#   1. Read GitHub Personal Access Token from env var GITHUB_PAT
+#   2. Fetch latest commit of the private repo
+#   3. Download zip and extract to Claude plugin cache
+#   4. Update installed_plugins.json and settings.json
+#   5. Install all dependencies via winget pip npm
+#      - ffmpeg, Node.js LTS, Python via winget
+#      - fish-audio-sdk, openai-whisper, google-api-python-client via pip
+#      - Remotion and related packages via npm install
+#   6. On install failure write detailed log
 
 $ErrorActionPreference = "Continue"  # 一部失敗してもインストールを続行
 $ProgressPreference = "SilentlyContinue"
@@ -230,7 +228,7 @@ if ($pyOk) {
 }
 
 # ============================================================
-# Section 5: Remotion (npm install)
+# Section 5: Remotion via npm install
 # ============================================================
 Write-Host ""
 Write-Host "[5/5] Remotion（テロップ焼き込みエンジン）をインストール..." -ForegroundColor Cyan
