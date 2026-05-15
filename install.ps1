@@ -214,6 +214,7 @@ if ($pyOk) {
         "pyyaml",
         "requests"
     )
+    $pyPackages += @("budoux", "pykakasi", "psutil", "silero-vad", "numpy")
     foreach ($pkg in $pyPackages) {
         Write-Host "  $pkg をインストール中..." -ForegroundColor Gray
         python -m pip install --upgrade $pkg 2>&1 | Out-File -Append -Encoding utf8 $PipLog
