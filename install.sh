@@ -28,6 +28,18 @@ if [ -z "$GITHUB_PAT" ]; then
     exit 1
 fi
 
+# PAT 形式の事前検証
+GITHUB_PAT="$(echo -n "$GITHUB_PAT" | tr -d ' \t\n\r')"
+case "$GITHUB_PAT" in
+    ghp_*|github_pat_*|gho_*|ghu_*|ghs_*) ;;
+    *)
+        echo "エラー: GitHub Personal Access Token の形式が不正です。"
+        echo "  トークンは 'ghp_' または 'github_pat_' で始まる必要があります。"
+        echo "  メールでお送りしたトークンに前後の空白や改行が混入していないか確認してください。"
+        exit 1
+        ;;
+esac
+
 # --- OS判定 ---
 case "$(uname -s)" in
     Darwin*) OS="mac";;
@@ -135,6 +147,14 @@ with open(path, "w", encoding="utf-8") as f:
 PYEOF
 
 echo "  プラグイン登録完了"
+
+# scripts/config.yaml を初期生成（template から）
+CFG_TEMPLATE="$INSTALL_PATH/scripts/config.yaml.template"
+CFG_TARGET="$INSTALL_PATH/scripts/config.yaml"
+if [ -f "$CFG_TEMPLATE" ] && [ ! -f "$CFG_TARGET" ]; then
+    cp "$CFG_TEMPLATE" "$CFG_TARGET"
+    echo "  [OK] scripts/config.yaml を template から生成"
+fi
 
 # ============================================================
 # Section 3: システム依存（brew/apt で自動インストール）

@@ -53,6 +53,17 @@ if (-not $Pat) {
     exit 1
 }
 
+# --- PAT 形式の事前検証 ---
+# 旧形式: ghp_xxxxx (40文字) / 新形式: github_pat_xxxxx
+$PatTrimmed = $Pat.Trim()
+if (-not ($PatTrimmed -match "^(ghp_|github_pat_|gho_|ghu_|ghs_)")) {
+    Write-Host "エラー: GitHub Personal Access Token の形式が不正です。" -ForegroundColor Red
+    Write-Host "  トークンは 'ghp_' または 'github_pat_' で始まる必要があります。"
+    Write-Host "  メールでお送りしたトークンに前後の空白や改行が混入していないか確認してください。"
+    exit 1
+}
+$Pat = $PatTrimmed
+
 # --- OS判定・パス設定 ---
 if ($IsWindows -or ($PSVersionTable.PSVersion.Major -lt 6)) {
     $HomeDir = $env:USERPROFILE
