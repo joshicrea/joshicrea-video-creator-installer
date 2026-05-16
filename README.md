@@ -2,31 +2,28 @@
 
 [joshicrea/joshicrea-video-creator](https://github.com/joshicrea/joshicrea-video-creator)（PRIVATE）の購入者向けインストーラー。
 
-このリポジトリ自体はPUBLICで、`install.ps1` と `install.sh` だけが置かれています。実際のプラグイン本体はPRIVATEリポジトリにあり、GitHub Personal Access Token (PAT) を使ってダウンロードします。
+このリポジトリ自体はPUBLICで、`install.ps1` と `install.sh` だけが置かれています。実際のプラグイン本体はPRIVATEリポジトリにあり、GitHub CLI (gh) 経由でダウンロードします。
 
 ---
 
 ## 購入者の方へ
 
-ご購入ありがとうございます。林からお送りした「アクセストークン」を使ってインストールします。
+ご購入ありがとうございます。GitHubの招待を承認してから、以下の手順でインストールしてください。
 
 ### Windows の方
 
-Claude Code のチャットに以下を貼り付けて送信してください（`ghp_xxxxx...` の部分は林からお伝えした文字列に置き換え）:
+Claude Code のチャットに以下をそのまま貼り付けて送信してください:
 
 ```
-以下のURLからAI動画クリエイターのインストーラーを取得して実行してください。
-実行前に環境変数 GITHUB_PAT に以下のトークンを設定してください: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.ps1
+以下のURLからAI動画クリエイターのインストールスクリプトを取得して、内容を確認してから実行してください: https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.ps1
 ```
 
 ### Mac の方
 
-ターミナル.app を開いて以下を実行（`ghp_xxxxx...` の部分は置き換え）:
+Claude Code のチャットに以下をそのまま貼り付けて送信してください:
 
-```bash
-GITHUB_PAT=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
-  curl -fsSL https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.sh | bash
+```
+以下のURLからAI動画クリエイターのインストールスクリプトを取得して、内容を確認してから実行してください: https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.sh
 ```
 
 ### インストール後
@@ -41,20 +38,17 @@ GITHUB_PAT=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
 
 ### 購入者が出るたびにやること
 
-1. GitHubで Personal Access Token を発行
-   - https://github.com/settings/tokens/new
-   - Note: `購入者名_video_creator`（誰用か分かる名前にする）
-   - Expiration: 1年 or 「期限なし」
-   - Scopes: **`repo` 権限のみチェック**
-   - 「Generate token」 → 表示されたトークン（`ghp_...`）をコピー
+1. GitHubで購入者のGitHubアカウント（メアド）を `joshicrea/joshicrea-video-creator` のコラボレーターに招待
+   - https://github.com/joshicrea/joshicrea-video-creator/settings/access
+   - 「Add people」→ 購入者のGitHubメアドを入力 → 「Add collaborator」
+   - 購入者に「GitHubから招待メールが届くので承認してください」と案内
 
-2. 購入者にメール送信
-   - 「アクセストークン: ghp_xxxxxxxx」と Windows/Mac 用の貼り付け文を添える
+2. 購入者は招待メールの「View invitation」→「Accept invitation」で承認するだけ（PAT不要）
 
 ### 購入者が退会・返金時のアクセス取り消し
 
-1. https://github.com/settings/tokens を開く
-2. 該当トークン（Note名で識別）を「Revoke」
+1. https://github.com/joshicrea/joshicrea-video-creator/settings/access を開く
+2. 該当ユーザーを「Remove」
 
 これで以降のインストール・アップデートはブロックされる。すでにインストール済みのファイルはローカルに残るが、次回アップデート時にダウンロードできなくなる。
 
@@ -72,7 +66,7 @@ GITHUB_PAT=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
 購入者のClaude Code
     ↓ チャット貼り付け
 install.ps1 / install.sh （このリポジトリ・PUBLIC）
-    ↓ PAT付きでGitHub APIを叩く
+    ↓ gh auth login --web でGitHub認証
 joshicrea-video-creator のzipball （PRIVATE本体）
     ↓ ダウンロード・展開
 ~/.claude/plugins/cache/joshicrea/joshicrea-video-creator/{sha}/
@@ -80,4 +74,4 @@ joshicrea-video-creator のzipball （PRIVATE本体）
 プラグインとして動作開始
 ```
 
-PATは Claude Code チャットで `$env:GITHUB_PAT = "ghp_xxx"` の形で渡され、`install.ps1` 内部で使われたあと `$env:GITHUB_PAT = $null` で破棄されます（再利用はされません）。
+認証はGitHub CLI (gh) のOAuthフローで行われます。PATの発行・管理・送付は不要です。

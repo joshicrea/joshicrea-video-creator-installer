@@ -1,19 +1,22 @@
 # AI Video Creator installer for Windows
 #
-# Usage: paste this into Claude Code or PowerShell.
-# Set environment variable GITHUB_PAT before running.
+# Usage: paste this into Claude Code chat:
 #   https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.ps1
 #
 # What it does:
-#   1. Read GitHub Personal Access Token from env var GITHUB_PAT
-#   2. Fetch latest commit of the private repo
-#   3. Download zip and extract to Claude plugin cache
-#   4. Update installed_plugins.json and settings.json
-#   5. Install all dependencies via winget pip npm
+#   1. Install GitHub CLI gh via winget if missing
+#   2. Run gh auth login --web if not authenticated
+#   3. Download AI Video Creator private repo via gh auth token
+#   4. Extract to Claude plugin cache
+#   5. Update installed_plugins.json and settings.json
+#   6. Install all dependencies via winget pip npm
 #      - ffmpeg, Node.js LTS, Python via winget
 #      - fish-audio-sdk, openai-whisper, google-api-python-client via pip
 #      - Remotion and related packages via npm install
-#   6. On install failure write detailed log
+#   7. On install failure write detailed log
+#
+# Auth model: seller adds buyer email as collaborator on private repo.
+# Buyer just authorizes via gh auth login --web. No PAT needed.
 
 $ErrorActionPreference = "Continue"  # keep going even if some steps fail
 $ProgressPreference = "SilentlyContinue"
@@ -39,30 +42,52 @@ function Update-EnvPath {
                 [System.Environment]::GetEnvironmentVariable("Path", "User")
 }
 
-# --- PAT 取得 ---
-$Pat = $env:GITHUB_PAT
-if (-not $Pat) {
-    Write-Host "エラー: GitHub Personal Access Token が設定されていません。" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Claude Code のチャットに以下のように貼り付けて再実行してください:"
-    Write-Host ""
-    Write-Host "  以下のURLからAI動画クリエイターのインストーラーを取得して実行してください。"
-    Write-Host "  実行前に環境変数 GITHUB_PAT に購入時にお伝えしたトークンを設定してください。"
-    Write-Host "  https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.ps1"
-    Write-Host ""
-    exit 1
+# --- GitHub CLI gh check / install ---
+if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+    Write-Host "GitHub CLI をインストールしています..." -ForegroundColor Yellow
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Host ""
+        Write-Host "エラー: winget が見つかりません（Windows 10 旧版では未搭載）。" -ForegroundColor Red
+        Write-Host "以下のいずれかをお試しください:"
+        Write-Host "  方法A: Microsoft Storeで「アプリ インストーラー」を更新してから本コマンドを再実行"
+        Write-Host "         https://www.microsoft.com/p/app-installer/9nblggh4nns1"
+        Write-Host "  方法B: 手動で GitHub CLI をインストール"
+        Write-Host "         https://cli.github.com/  からダウンロードしてインストール後、本コマンドを再実行"
+        exit 1
+    }
+    winget install --id GitHub.cli --silent --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+    Update-EnvPath
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        Write-Host "エラー: GitHub CLI のインストールに失敗しました。" -ForegroundColor Red
+        Write-Host "https://cli.github.com/ から手動でインストールしてください。"
+        exit 1
+    }
+    Write-Host "[OK] GitHub CLI インストール完了" -ForegroundColor Green
 }
 
-# --- PAT 形式の事前検証 ---
-# 旧形式: ghp_xxxxx (40文字) / 新形式: github_pat_xxxxx
-$PatTrimmed = $Pat.Trim()
-if (-not ($PatTrimmed -match "^(ghp_|github_pat_|gho_|ghu_|ghs_)")) {
-    Write-Host "エラー: GitHub Personal Access Token の形式が不正です。" -ForegroundColor Red
-    Write-Host "  トークンは 'ghp_' または 'github_pat_' で始まる必要があります。"
-    Write-Host "  メールでお送りしたトークンに前後の空白や改行が混入していないか確認してください。"
+# --- GitHub 認証確認 ---
+gh auth status 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "GitHubへのログインが必要です。" -ForegroundColor Yellow
+    Write-Host "次の手順で進めてください:"
+    Write-Host "  1. このあと表示される8桁のコードをコピー"
+    Write-Host "  2. 自動で開くブラウザでコードを貼り付け"
+    Write-Host "  3. 「Authorize github」をクリック"
+    Write-Host ""
+    gh auth login --web --git-protocol https --hostname github.com
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "エラー: GitHub認証に失敗しました。" -ForegroundColor Red
+        exit 1
+    }
+}
+
+# --- トークンを取得（gh が保持しているもの・PATではない） ---
+$Pat = (gh auth token).Trim()
+if (-not $Pat) {
+    Write-Host "エラー: gh auth token の取得に失敗しました。" -ForegroundColor Red
     exit 1
 }
-$Pat = $PatTrimmed
 
 # --- OS判定・パス設定 ---
 if ($IsWindows -or ($PSVersionTable.PSVersion.Major -lt 6)) {
@@ -95,12 +120,41 @@ try {
     $FullSha = $CommitInfo.sha
     $ShortSha = $FullSha.Substring(0, 12)
 } catch {
-    Write-Host "GitHubへの接続に失敗しました: $_" -ForegroundColor Red
-    Write-Host "Personal Access Token が正しいか、リポジトリへのアクセス権があるか確認してください。"
+    $statusCode = $null
+    try { $statusCode = $_.Exception.Response.StatusCode.value__ } catch {}
+    Write-Host ""
+    Write-Host "GitHubへの接続に失敗しました。" -ForegroundColor Red
+    switch ($statusCode) {
+        401 { Write-Host "  原因: Personal Access Token が無効です（期限切れ・取り消し済みの可能性）。"; Write-Host "  対処: info@joshicrea.com に再発行を依頼してください。" }
+        403 { Write-Host "  原因: アクセス権がありません。GitHubのコラボレーター招待を承認していますか？"; Write-Host "  対処: メールに記載の招待リンクから「Accept invitation」をクリックしてください。" }
+        404 { Write-Host "  原因: リポジトリにアクセスできません（招待未承認またはトークンのスコープ不足）。"; Write-Host "  対処: トークンの scope に 'repo' が含まれているか確認してください。" }
+        { $_ -ge 500 } { Write-Host "  原因: GitHub側の一時的な障害です。"; Write-Host "  対処: 数分待って再実行してください。" }
+        $null { Write-Host "  原因: ネットワーク接続に問題があります。"; Write-Host "  対処: インターネット接続を確認してください。" }
+        default { Write-Host "  HTTP $statusCode : $_" }
+    }
     exit 1
 }
 
 $InstallPath = [IO.Path]::Combine($CacheDir, $ShortSha)
+
+# 既存キャッシュから user-profile.md / config.yaml / .setup-status を退避
+$preservedProfile = $null
+$preservedConfig  = $null
+$preservedStatus  = $null
+Get-ChildItem $CacheDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $ShortSha } | ForEach-Object {
+    $oldProfile = Join-Path $_.FullName ".claude\user-profile.md"
+    $oldConfig  = Join-Path $_.FullName "scripts\config.yaml"
+    $oldStatus  = Join-Path $_.FullName ".claude\.setup-status"
+    if ((Test-Path $oldProfile) -and -not $preservedProfile) {
+        $preservedProfile = [System.IO.File]::ReadAllText($oldProfile, [System.Text.Encoding]::UTF8)
+    }
+    if ((Test-Path $oldConfig) -and -not $preservedConfig) {
+        $preservedConfig = [System.IO.File]::ReadAllText($oldConfig, [System.Text.Encoding]::UTF8)
+    }
+    if ((Test-Path $oldStatus) -and -not $preservedStatus) {
+        $preservedStatus = [System.IO.File]::ReadAllText($oldStatus, [System.Text.Encoding]::UTF8)
+    }
+}
 
 if (Test-Path $InstallPath) {
     Write-Host "  すでに最新版がダウンロード済み ($ShortSha)" -ForegroundColor Green
@@ -123,6 +177,32 @@ if (Test-Path $InstallPath) {
     Remove-Item $ExtTemp -Force -ErrorAction SilentlyContinue
     Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
     Write-Host "  ダウンロード完了 ($ShortSha)" -ForegroundColor Green
+}
+
+# ダウンロードしたプラグインが正当か検証（plugin.json 存在チェック）
+$pluginJsonPath = Join-Path $InstallPath ".claude-plugin\plugin.json"
+if (-not (Test-Path $pluginJsonPath)) {
+    Write-Host "エラー: ダウンロードしたプラグインに .claude-plugin/plugin.json が含まれていません。" -ForegroundColor Red
+    Write-Host "  リポジトリの構造が壊れている可能性があります。info@joshicrea.com にお問い合わせください。"
+    exit 1
+}
+
+# 退避したユーザーデータを新キャッシュへ復元
+if ($preservedProfile) {
+    $profilePath = Join-Path $InstallPath ".claude\user-profile.md"
+    New-Item -ItemType Directory -Force -Path (Split-Path $profilePath) | Out-Null
+    Write-Utf8NoBom -Path $profilePath -Content $preservedProfile
+    Write-Host "  [OK] user-profile.md を引き継ぎ" -ForegroundColor Green
+}
+if ($preservedConfig) {
+    $configPath = Join-Path $InstallPath "scripts\config.yaml"
+    Write-Utf8NoBom -Path $configPath -Content $preservedConfig
+    Write-Host "  [OK] config.yaml を引き継ぎ" -ForegroundColor Green
+}
+if ($preservedStatus) {
+    $statusPath = Join-Path $InstallPath ".claude\.setup-status"
+    New-Item -ItemType Directory -Force -Path (Split-Path $statusPath) | Out-Null
+    Write-Utf8NoBom -Path $statusPath -Content $preservedStatus
 }
 
 # Cleanup old versions, keep only the 2 most recent
@@ -215,7 +295,12 @@ function Install-WithWinget($name, $id) {
                 return $false
             }
         } else {
-            Write-Host "  [SKIP] winget無しのため $name は手動インストールが必要です。" -ForegroundColor Yellow
+            Write-Host "  [SKIP] winget未対応のため $name を手動でインストールしてください。" -ForegroundColor Yellow
+            switch ($name) {
+                "python" { Write-Host "    DL: https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" -ForegroundColor Gray }
+                "node"   { Write-Host "    DL: https://nodejs.org/dist/lts/node-lts-x64.msi" -ForegroundColor Gray }
+                "ffmpeg" { Write-Host "    DL: https://github.com/BtbN/FFmpeg-Builds/releases/latest" -ForegroundColor Gray }
+            }
             return $false
         }
     } else {
@@ -292,9 +377,17 @@ if ($nodeOk) {
             Write-Host "  npm キャッシュをクリーン..." -ForegroundColor Gray
             npm cache verify 2>&1 | Out-File -Append -Encoding utf8 $NpmLog
 
-            Write-Host "  npm install 実行中..." -ForegroundColor Gray
-            npm install --no-audit --no-fund 2>&1 | Out-File -Append -Encoding utf8 $NpmLog
-            $npmExit = $LASTEXITCODE
+            Write-Host "  npm install 実行中（最大30分）..." -ForegroundColor Gray
+            $npmProc = Start-Process npm -ArgumentList "install","--no-audit","--no-fund" -PassThru -NoNewWindow -RedirectStandardOutput "$NpmLog.stdout" -RedirectStandardError "$NpmLog.stderr"
+            $npmCompleted = $npmProc.WaitForExit(1800000)
+            if (-not $npmCompleted) {
+                $npmProc | Stop-Process -Force -ErrorAction SilentlyContinue
+                Write-Host "  [WARN] npm install がタイムアウトしました（30分超）。" -ForegroundColor Yellow
+            }
+            $npmExit = if ($npmCompleted) { $npmProc.ExitCode } else { 1 }
+            foreach ($tmpLog in @("$NpmLog.stdout", "$NpmLog.stderr")) {
+                if (Test-Path $tmpLog) { Get-Content $tmpLog | Out-File -Append -Encoding utf8 $NpmLog; Remove-Item $tmpLog -Force -ErrorAction SilentlyContinue }
+            }
 
             # 成功判定: exit code 0 かつ remotion ディレクトリ存在 かつ ログに npm ERR が含まれない
             $remotionDirExists = Test-Path (Join-Path $RemotionDir "node_modules\remotion")
@@ -314,7 +407,7 @@ if ($nodeOk) {
                 Write-Host "    2. それでも失敗するなら、以下のフォルダで手動実行:" -ForegroundColor Gray
                 Write-Host "       cd `"$RemotionDir`"" -ForegroundColor Gray
                 Write-Host "       npm install" -ForegroundColor Gray
-                Write-Host "    3. ログ ($NpmLog) を林にお送りください" -ForegroundColor Gray
+                Write-Host "    3. ログ ($NpmLog) を info@joshicrea.com にお送りください" -ForegroundColor Gray
             }
         } finally {
             Pop-Location
@@ -342,5 +435,3 @@ if (-not $ffmpegOk -or -not $nodeOk -or -not $pyOk) {
     Write-Host ""
 }
 
-# PATを環境変数から消去
-$env:GITHUB_PAT = $null

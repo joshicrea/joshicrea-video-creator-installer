@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-# AI動画クリエイター ワンライナーインストーラー (Mac/Linux)
+# AI Video Creator installer for Mac/Linux
 #
-# 使い方:
-#   GITHUB_PAT=ghp_xxxx curl -fsSL https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.sh | bash
+# Usage: paste this into Claude Code chat or terminal:
+#   curl -fsSL https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.sh | bash
 #
-# やること:
-#   1. PRIVATEリポジトリから本体をダウンロード・展開
-#   2. installed_plugins.json / settings.json を更新
-#   3. 全依存関係を自動インストール
+# What it does:
+#   1. Install GitHub CLI gh via brew if missing
+#   2. Run gh auth login --web if not authenticated
+#   3. Download AI Video Creator private repo via gh auth token
+#   4. Extract to Claude plugin cache
+#   5. Update installed_plugins.json / settings.json
+#   6. Install all dependencies
 #      - Mac: brew install ffmpeg / node / python3
 #      - Linux: apt install ffmpeg / nodejs / python3
-#      - Python パッケージ（pip）
-#      - Remotion（npm install）
+#      - Python packages via pip
+#      - Remotion via npm install
+#
+# Auth model: seller adds buyer email as collaborator on private repo.
+# Buyer just authorizes via gh auth login --web. No PAT needed.
 
 set +e  # 一部失敗しても続行
 
@@ -19,33 +25,20 @@ echo ""
 echo "AI動画クリエイター プラグインをインストールしています..."
 echo ""
 
-# --- PAT 取得 ---
-if [ -z "$GITHUB_PAT" ]; then
-    echo "エラー: GitHub Personal Access Token が設定されていません。"
-    echo ""
-    echo "ターミナルに以下のように貼り付けて再実行してください:"
-    echo "  GITHUB_PAT=ghp_xxxxxxxx curl -fsSL https://raw.githubusercontent.com/joshicrea/joshicrea-video-creator-installer/master/install.sh | bash"
-    exit 1
-fi
-
-# PAT 形式の事前検証
-GITHUB_PAT="$(echo -n "$GITHUB_PAT" | tr -d ' \t\n\r')"
-case "$GITHUB_PAT" in
-    ghp_*|github_pat_*|gho_*|ghu_*|ghs_*) ;;
-    *)
-        echo "エラー: GitHub Personal Access Token の形式が不正です。"
-        echo "  トークンは 'ghp_' または 'github_pat_' で始まる必要があります。"
-        echo "  メールでお送りしたトークンに前後の空白や改行が混入していないか確認してください。"
-        exit 1
-        ;;
-esac
-
-# --- OS判定 ---
+# --- OS・アーキテクチャ判定 ---
 case "$(uname -s)" in
     Darwin*) OS="mac";;
     Linux*)  OS="linux";;
     *)       OS="unknown";;
 esac
+ARCH="$(uname -m)"
+if [ "$OS" = "mac" ]; then
+    if [ "$ARCH" = "arm64" ]; then
+        echo "  [INFO] Apple Silicon (M1/M2/M3) を検出"
+    else
+        echo "  [INFO] Intel Mac を検出"
+    fi
+fi
 
 HOME_DIR="$HOME"
 TEMP_DIR="${TMPDIR:-/tmp}"
@@ -54,6 +47,51 @@ PLUGINS_DIR="$CLAUDE_DIR/plugins"
 CACHE_DIR="$PLUGINS_DIR/cache/joshicrea/joshicrea-video-creator"
 LOG_DIR="$CLAUDE_DIR/logs"
 mkdir -p "$CACHE_DIR" "$LOG_DIR"
+
+# --- GitHub CLI (gh) の確認・インストール ---
+if ! command -v gh >/dev/null 2>&1; then
+    echo "GitHub CLI (gh) をインストールしています..."
+    if [ "$OS" = "mac" ]; then
+        if command -v brew >/dev/null 2>&1; then
+            brew install gh >/dev/null 2>&1
+        else
+            echo "エラー: Homebrew が見つかりません。https://brew.sh からインストールしてください。"
+            exit 1
+        fi
+    elif [ "$OS" = "linux" ]; then
+        echo "Linux環境では gh の手動インストールが必要です。"
+        echo "https://github.com/cli/cli/blob/trunk/docs/install_linux.md を参照してください。"
+        exit 1
+    fi
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "エラー: GitHub CLI のインストールに失敗しました。"
+        exit 1
+    fi
+    echo "[OK] GitHub CLI インストール完了"
+fi
+
+# --- GitHub 認証確認 ---
+if ! gh auth status >/dev/null 2>&1; then
+    echo ""
+    echo "GitHubへのログインが必要です。"
+    echo "次の手順で進めてください:"
+    echo "  1. このあと表示される8桁のコードをコピー"
+    echo "  2. 自動で開くブラウザでコードを貼り付け"
+    echo "  3. 「Authorize github」をクリック"
+    echo ""
+    gh auth login --web --git-protocol https --hostname github.com
+    if [ $? -ne 0 ]; then
+        echo "エラー: GitHub認証に失敗しました。"
+        exit 1
+    fi
+fi
+
+# --- トークンを取得（gh が保持しているもの・PATではない） ---
+GITHUB_PAT="$(gh auth token | tr -d '[:space:]')"
+if [ -z "$GITHUB_PAT" ]; then
+    echo "エラー: gh auth token の取得に失敗しました。"
+    exit 1
+fi
 
 # ============================================================
 # Section 1: 本体プラグインをダウンロード・展開
@@ -72,6 +110,18 @@ COMMIT_JSON=$(curl -fsSL \
 FULL_SHA=$(echo "$COMMIT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['sha'])")
 SHORT_SHA="${FULL_SHA:0:12}"
 INSTALL_PATH="$CACHE_DIR/$SHORT_SHA"
+
+# 既存キャッシュから user-profile.md / config.yaml / .setup-status を退避
+PRESERVED_PROFILE=""
+PRESERVED_CONFIG=""
+PRESERVED_STATUS=""
+for olddir in "$CACHE_DIR"/*/; do
+    [ -d "$olddir" ] || continue
+    case "$olddir" in *"/$SHORT_SHA/"*) continue;; esac
+    [ -z "$PRESERVED_PROFILE" ] && [ -f "$olddir/.claude/user-profile.md" ] && PRESERVED_PROFILE="$(cat "$olddir/.claude/user-profile.md")"
+    [ -z "$PRESERVED_CONFIG"  ] && [ -f "$olddir/scripts/config.yaml" ]    && PRESERVED_CONFIG="$(cat "$olddir/scripts/config.yaml")"
+    [ -z "$PRESERVED_STATUS"  ] && [ -f "$olddir/.claude/.setup-status" ]  && PRESERVED_STATUS="$(cat "$olddir/.claude/.setup-status")"
+done
 
 if [ -d "$INSTALL_PATH" ]; then
     echo "  すでに最新版がダウンロード済み ($SHORT_SHA)"
@@ -95,6 +145,21 @@ else
     mv "$EXTRACTED" "$INSTALL_PATH"
     rm -rf "$EXT_TEMP" "$ZIP_PATH"
     echo "  ダウンロード完了 ($SHORT_SHA)"
+fi
+
+# 退避したユーザーデータを新キャッシュへ復元
+if [ -n "$PRESERVED_PROFILE" ]; then
+    mkdir -p "$INSTALL_PATH/.claude"
+    printf '%s' "$PRESERVED_PROFILE" > "$INSTALL_PATH/.claude/user-profile.md"
+    echo "  [OK] user-profile.md を引き継ぎ"
+fi
+if [ -n "$PRESERVED_CONFIG" ]; then
+    printf '%s' "$PRESERVED_CONFIG" > "$INSTALL_PATH/scripts/config.yaml"
+    echo "  [OK] config.yaml を引き継ぎ"
+fi
+if [ -n "$PRESERVED_STATUS" ]; then
+    mkdir -p "$INSTALL_PATH/.claude"
+    printf '%s' "$PRESERVED_STATUS" > "$INSTALL_PATH/.claude/.setup-status"
 fi
 
 # ============================================================
@@ -246,9 +311,16 @@ if $NODE_OK; then
         rm -rf node_modules
         echo "  npm キャッシュをクリーン..."
         npm cache verify >> "$NPM_LOG" 2>&1
-        echo "  npm install 実行中..."
-        npm install --no-audit --no-fund >> "$NPM_LOG" 2>&1
-
+        echo "  npm install 実行中（最大30分）..."
+        _timeout_cmd="timeout"
+        command -v timeout >/dev/null 2>&1 || { command -v gtimeout >/dev/null 2>&1 && _timeout_cmd="gtimeout"; }
+        if command -v $_timeout_cmd >/dev/null 2>&1; then
+            $_timeout_cmd 1800 npm install --no-audit --no-fund >> "$NPM_LOG" 2>&1
+            _npm_exit=$?
+            [ $_npm_exit -eq 124 ] && echo "  [WARN] npm install がタイムアウト（30分）しました。cd \"$REMOTION_DIR\" && npm install を手動実行してください"
+        else
+            npm install --no-audit --no-fund >> "$NPM_LOG" 2>&1
+        fi
         if [ -d "$REMOTION_DIR/node_modules/remotion" ]; then
             echo "  [OK] Remotion インストール完了"
         else
@@ -259,7 +331,7 @@ if $NODE_OK; then
             echo "    1. ターミナルで以下を手動実行:"
             echo "       cd \"$REMOTION_DIR\""
             echo "       npm install"
-            echo "    2. ログ ($NPM_LOG) を林にお送りください"
+            echo "    2. ログ ($NPM_LOG) を info@joshicrea.com にお送りください"
         fi
         cd - >/dev/null
     fi
@@ -280,4 +352,3 @@ echo "  2. Claude Code を再度開く"
 echo "  3. チャットに「こんにちは」と送るとセットアップが始まります"
 echo ""
 
-unset GITHUB_PAT
