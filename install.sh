@@ -274,7 +274,7 @@ if $PY_OK; then
     echo "  pip 更新中..."
     python3 -m pip install --upgrade pip >> "$PIP_LOG" 2>&1
 
-    for pkg in fish-audio-sdk openai-whisper google-api-python-client google-auth-oauthlib pyyaml requests budoux pykakasi psutil silero-vad numpy; do
+    for pkg in fish-audio-sdk openai-whisper pyyaml requests budoux pykakasi psutil silero-vad numpy; do
         echo "  $pkg をインストール中..."
         python3 -m pip install --upgrade "$pkg" >> "$PIP_LOG" 2>&1
         if [ $? -eq 0 ]; then

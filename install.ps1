@@ -11,7 +11,7 @@
 #   5. Update installed_plugins.json and settings.json
 #   6. Install all dependencies via winget pip npm
 #      - ffmpeg, Node.js LTS, Python via winget
-#      - fish-audio-sdk, openai-whisper, google-api-python-client via pip
+#      - fish-audio-sdk, openai-whisper, pyyaml via pip
 #      - Remotion and related packages via npm install
 #   7. On install failure write detailed log
 #
@@ -261,6 +261,14 @@ if ($Settings.enabledPlugins.PSObject.Properties[$Key]) {
 Write-Utf8NoBom -Path $SettingsPath -Content ($Settings | ConvertTo-Json -Depth 10)
 Write-Host "  プラグイン登録完了" -ForegroundColor Green
 
+# hooks.json コピー確認（ZIPに含まれていることを明示確認）
+$hooksJsonDest = Join-Path $InstallPath "hooks\hooks.json"
+if (Test-Path $hooksJsonDest) {
+    Write-Host "  [OK] hooks/hooks.json が配置済み" -ForegroundColor Green
+} else {
+    Write-Host "  [WARN] hooks/hooks.json が見つかりません。SessionStart hook が機能しない可能性があります。" -ForegroundColor Yellow
+}
+
 # scripts/config.yaml を初期生成（template から）
 $cfgTemplate = Join-Path $InstallPath "scripts\config.yaml.template"
 $cfgTarget = Join-Path $InstallPath "scripts\config.yaml"
@@ -277,8 +285,10 @@ Write-Host "[3/5] システム依存関係を自動インストール..." -Foreg
 
 $HasWinget = Get-Command winget -ErrorAction SilentlyContinue
 if (-not $HasWinget) {
-    Write-Host "  警告: winget が見つかりません。Windows 11 標準ですが、Windows 10 ではMicrosoft Storeから「アプリ インストーラー」を入れてください。" -ForegroundColor Yellow
-    Write-Host "  https://www.microsoft.com/p/app-installer/9nblggh4nns1"
+    Write-Host "エラー: winget が見つかりません。" -ForegroundColor Red
+    Write-Host "Microsoft Store で「アプリ インストーラー」を更新してください:" -ForegroundColor Red
+    Write-Host "https://www.microsoft.com/p/app-installer/9nblggh4nns1" -ForegroundColor Yellow
+    exit 1
 }
 
 function Install-WithWinget($name, $id) {
@@ -327,8 +337,6 @@ if ($pyOk) {
     $pyPackages = @(
         "fish-audio-sdk",
         "openai-whisper",
-        "google-api-python-client",
-        "google-auth-oauthlib",
         "pyyaml",
         "requests"
     )
